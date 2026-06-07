@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<!--
+  OctoCRM — Worker Booking
+  Standalone single-file companion app. Shares the SAME Firebase Realtime DB
+  (octoCRM_v4) as maintenance-crm1.html. Reads techs[] + jobs[], shows a
+  per-worker calendar, and creates bookings as jobs.
+
+  Architecture rules honoured (see CLAUDE.md):
+   - Never set() the whole DB. Writes go through per-key transactions on
+     octoCRM_v4/jobs and octoCRM_v4/nJ only. Reports are never touched.
+   - Job shape matches the main app:
+     {id,title,customer,machine,model,techId,techIds[],type,priority,
+      date,time,desc,status,createdAt,waSent,...}
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>OctoCRM — Worker Booking</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --input:#11141a;
+    --bdr:#2a2f3a; --t1:#eef1f6; --t2:#aeb6c4; --t3:#6b7384;
+    --ac:#19c3b2; --pu:#7c6cff; --ok:#33c27f; --wn:#f0a93b; --er:#e5544b;
+    --wa:#25d366; --r:10px; --fs-sm:13px; --fs-xs:11px;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--t1);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.4}
+  a{color:var(--ac)}
+  header{position:sticky;top:0;z-index:20;background:linear-gradient(180deg,#171a21,#13161c);border-bottom:1px solid var(--bdr);padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  header h1{font-size:17px;margin:0;font-weight:800;letter-spacing:.2px}
+  header h1 .dot{color:var(--ac)}
+  .sync{font-size:var(--fs-xs);color:var(--t3);display:flex;align-items:center;gap:6px;margin-left:auto}
+  .sync .led{width:8px;height:8px;border-radius:50%;background:var(--t3)}
+  .sync.on .led{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .sync.err .led{background:var(--er)}
+  .wrap{max-width:980px;margin:0 auto;padding:16px}
+  .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px}
+  .fg{display:flex;flex-direction:column;gap:5px}
+  .fg label{font-size:var(--fs-xs);color:var(--t2);text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+  .fc{background:var(--input);border:1px solid var(--bdr);color:var(--t1);border-radius:var(--r);padding:10px 12px;font-size:15px;min-height:44px;width:100%}
+  select.fc{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M2 4l4 4 4-4' stroke='%23aeb6c4' stroke-width='1.6' fill='none'/></svg>");background-repeat:no-repeat;background-position:right 12px center;padding-right:30px}
+  textarea.fc{min-height:74px;resize:vertical;font-family:inherit}
+  .fc:focus{outline:none;border-color:var(--ac)}
+  .btn{border:1px solid var(--bdr);background:var(--panel2);color:var(--t1);border-radius:var(--r);padding:10px 16px;font-size:15px;cursor:pointer;min-height:44px;font-weight:600}
+  .btn:hover{border-color:var(--ac)}
+  .btn-p{background:var(--ac);border-color:var(--ac);color:#04211e}
+  .btn-p:hover{filter:brightness(1.08)}
+  .btn-sm{padding:7px 12px;min-height:38px;font-size:var(--fs-sm)}
+  .btn-d{color:var(--er);border-color:#41262a}
+  .btn-wa{background:var(--wa);border-color:var(--wa);color:#04321a}
+  .btn-wa:hover{filter:brightness(1.08)}
+  .modal-f{flex-wrap:wrap}
+  .btn-ghost{background:transparent}
+
+  /* Worker summary */
+  .wkr{background:var(--panel);border:1px solid var(--bdr);border-radius:var(--r);padding:14px 16px;display:flex;align-items:center;gap:14px;margin-bottom:14px;flex-wrap:wrap}
+  .ava{width:46px;height:46px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:18px;color:#04211e;background:var(--ac);flex:none}
+  .wkr .meta{display:flex;flex-direction:column;gap:2px}
+  .wkr .meta b{font-size:16px}
+  .wkr .meta span{font-size:var(--fs-sm);color:var(--t2)}
+  .pill{font-size:var(--fs-xs);font-weight:700;padding:4px 10px;border-radius:99px;border:1px solid var(--bdr)}
+  .pill.ok{color:var(--ok);border-color:#1f4030;background:#11241b}
+  .pill.busy{color:var(--wn);border-color:#46391c;background:#241d10}
+  .wkr .right{margin-left:auto;display:flex;gap:8px}
+
+  /* Calendar */
+  .cal{background:var(--panel);border:1px solid var(--bdr);border-radius:var(--r);overflow:hidden}
+  .cal-h{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--bdr)}
+  .cal-h b{font-size:16px}
+  .cal-h .nav{margin-left:auto;display:flex;gap:6px}
+  .nbtn{width:40px;height:40px;border-radius:8px;border:1px solid var(--bdr);background:var(--panel2);color:var(--t1);font-size:18px;cursor:pointer}
+  .nbtn:hover{border-color:var(--ac)}
+  .dow{display:grid;grid-template-columns:repeat(7,1fr);background:var(--panel2)}
+  .dow span{text-align:center;font-size:var(--fs-xs);color:var(--t3);padding:8px 0;font-weight:700;text-transform:uppercase}
+  .grid{display:grid;grid-template-columns:repeat(7,1fr)}
+  .cell{height:96px;border-right:1px solid var(--bdr);border-bottom:1px solid var(--bdr);padding:5px;position:relative;cursor:pointer;display:flex;flex-direction:column;gap:3px;overflow:hidden}
+  .cell:nth-child(7n){border-right:none}
+  .cell.pad{background:#12141a;cursor:default}
+  .cell:not(.pad):hover{background:var(--panel2)}
+  .cell .dn{font-size:12px;color:var(--t2);font-weight:600;align-self:flex-end}
+  .cell.today .dn{background:var(--ac);color:#04211e;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center}
+  .cell.sel{box-shadow:inset 0 0 0 2px var(--ac)}
+  .ev{font-size:11px;line-height:1.3;padding:2px 5px;border-radius:5px;background:var(--panel2);border-left:3px solid var(--ac);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:100%}
+  .ev.s-Open{border-left-color:var(--pu)}
+  .ev.s-Assigned{border-left-color:var(--ac)}
+  .ev.s-In-Progress{border-left-color:var(--wn)}
+  .ev.s-Completed{border-left-color:var(--ok);opacity:.7}
+  .ev.ext{border-left-color:var(--pu);border-left-style:dashed;background:#1a1726;color:var(--t2)}
+  .more{font-size:10px;color:var(--t3);padding-left:4px}
+
+  /* Day list (mobile-friendly under calendar) */
+  .day{margin-top:14px;background:#252b38;border:1px solid #3a4150;border-radius:14px;padding:14px}
+  .day:empty{display:none}
+  .day h3{font-size:14px;margin:0 0 10px;color:var(--t1)}
+  .jc{background:#30374a;border:1px solid #434b5d;border-left:3px solid var(--ac);border-radius:var(--r);padding:12px 14px;margin-bottom:10px}
+  .jc.s-Open{border-left-color:var(--pu)} .jc.s-Assigned{border-left-color:var(--ac)}
+  .jc.s-In-Progress{border-left-color:var(--wn)} .jc.s-Completed{border-left-color:var(--ok)}
+  .jc.ext{border-left-color:var(--pu);border-left-style:dashed;background:#2c2740}
+  .jc-top{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+  .jc-top b{font-size:15px;color:#fff}
+  .jc-meta{font-size:var(--fs-sm);color:#cdd4e0;margin-top:5px;display:flex;flex-wrap:wrap;gap:4px 14px}
+  .bd{font-size:var(--fs-xs);font-weight:700;padding:3px 9px;border-radius:99px;border:1px solid #525a6c;white-space:nowrap}
+  .bd.Open{color:var(--pu)} .bd.Assigned{color:var(--ac)} .bd.In-Progress{color:var(--wn)} .bd.Completed{color:var(--ok)}
+  .es{text-align:center;color:#aeb6c4;padding:22px;font-size:var(--fs-sm)}
+
+  /* Modal */
+  .ov{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:flex-start;justify-content:center;z-index:50;padding:20px;overflow:auto}
+  .ov.on{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--bdr);border-radius:14px;width:100%;max-width:520px;margin:auto}
+  .modal-h{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--bdr)}
+  .modal-h b{font-size:16px}
+  .x{background:none;border:none;color:var(--t2);font-size:24px;cursor:pointer;line-height:1;padding:0 4px}
+  .modal-b{padding:16px 18px;display:flex;flex-direction:column;gap:12px}
+  .fr{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .modal-f{padding:14px 18px;border-top:1px solid var(--bdr);display:flex;gap:10px;justify-content:flex-end}
+
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--bdr);border-left:3px solid var(--ac);color:var(--t1);padding:12px 18px;border-radius:10px;font-size:14px;z-index:80;opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;max-width:90vw}
+  .toast.on{opacity:1;transform:translateX(-50%) translateY(-4px)}
+  .toast.error{border-left-color:var(--er)} .toast.success{border-left-color:var(--ok)}
+  @media(max-width:560px){
+    .cell{height:78px} .cell .dn{font-size:11px}
+    .ev{font-size:10px;padding:2px 4px} .fr{grid-template-columns:1fr}
+    .wrap{padding:12px}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Octo<span class="dot">·</span>Booking <span style="color:var(--t3);font-weight:600;font-size:14px">— Sriram</span></h1>
+  <div class="sync" id="sync"><span class="led"></span><span id="syncTxt">Connecting…</span></div>
+</header>
+
+<div class="wrap">
+  <div class="bar">
+    <div style="flex:1;min-width:180px"></div>
+    <button class="btn btn-p" onclick="openBooking()">+ New Booking</button>
+  </div>
+
+  <div id="wkrBox"></div>
+
+  <div class="cal">
+    <div class="cal-h">
+      <b id="calTitle">—</b>
+      <div class="nav">
+        <button class="nbtn" onclick="moveMonth(-1)" aria-label="Previous">‹</button>
+        <button class="nbtn" onclick="goToday()" title="Today" style="width:auto;padding:0 12px;font-size:13px;font-weight:700">Today</button>
+        <button class="nbtn" onclick="moveMonth(1)" aria-label="Next">›</button>
+      </div>
+    </div>
+    <div class="dow"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div>
+    <div class="grid" id="grid"></div>
+  </div>
+
+  <div class="day" id="dayBox"></div>
+</div>
+
+<!-- Booking modal -->
+<div class="ov" id="ov">
+  <div class="modal">
+    <div class="modal-h"><b id="mTitle">New Booking</b><button class="x" onclick="closeModal()">×</button></div>
+    <div class="modal-b">
+      <div class="fg"><label>Job Title *</label><input class="fc" id="bTi" placeholder="PM Service — ABB Changi"></div>
+      <div class="fr">
+        <div class="fg"><label>Worker</label><input class="fc" id="bWkName" value="Sriram" disabled style="opacity:.8"><input type="hidden" id="bWk"></div>
+        <div class="fg"><label>Customer</label><input class="fc" id="bCu" placeholder="Customer name"></div>
+      </div>
+      <div class="fr">
+        <div class="fg"><label>Date *</label><input class="fc" type="date" id="bDt"></div>
+        <div class="fg"><label>Time</label><input class="fc" type="time" id="bTm"></div>
+      </div>
+      <div class="fr">
+        <div class="fg"><label>Type</label>
+          <select class="fc" id="bTy">
+            <option>Preventive Maintenance</option><option>Corrective Maintenance</option>
+            <option>Breakdown Call</option><option>Follow-Up Call</option>
+            <option>Installation</option><option>Delivery</option><option>Inspection</option><option>Emergency</option>
+          </select>
+        </div>
+        <div class="fg"><label>Priority</label>
+          <select class="fc" id="bPr"><option>Low</option><option selected>Medium</option><option>High</option><option>Urgent</option></select>
+        </div>
+      </div>
+      <div class="fr">
+        <div class="fg"><label>Machine / Serial</label><input class="fc" id="bMc" placeholder="B88357"></div>
+        <div class="fg"><label>Model</label><input class="fc" id="bMo" placeholder="TP-601Y1"></div>
+      </div>
+      <div class="fg"><label>Address</label><input class="fc" id="bAd" placeholder="Site address"></div>
+      <div class="fg"><label>Description</label><textarea class="fc" id="bDs" placeholder="What needs doing…"></textarea></div>
+      <input type="hidden" id="bEid">
+    </div>
+    <div class="modal-f">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-wa" id="bWa" onclick="waBooking()">WhatsApp Worker</button>
+      <button class="btn btn-p" id="bSave" onclick="saveBooking()">Save Booking</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ---------- shared Firebase config (same project as OctoCRM) ---------- */
+const FB_CFG={apiKey:"AIzaSyCSQAS7mFBlTfmz0FVWaSLgI-Puk1Y3sN4",authDomain:"octocrm1.firebaseapp.com",databaseURL:"https://octocrm1-default-rtdb.asia-southeast1.firebasedatabase.app",projectId:"octocrm1",storageBucket:"octocrm1.firebasestorage.app",messagingSenderId:"212247591529",appId:"1:212247591529:web:4a076e40a71b59646b00f8"};
+const FB_PATH='octoCRM_v4';
+
+/* Cross-CRM shared calendar (same node AmwayCRM uses). Each app publishes its
+   own events under SHARED_NODE/<MY_TAG> and reads every OTHER tag. Publishing
+   Sriram's bookings here makes them appear on the Amway calendar, and reading
+   the node shows Amway's (and any other CRM's) events here — two-way sync. */
+const SHARED_NODE='sharedFieldServiceCal_v1';
+const MY_TAG='octopack';               // shared-cal tag for the OctoCRM side (must differ from Amway's 'amway')
+const MY_LABEL='OctoCRM · Sriram';
+let _sharedEvents=[];                   // incoming events from OTHER tags
+let _lastPublished='';                  // dedupe: JSON of last block we pushed
+
+let fbDB=null, DB={techs:[],jobs:[],nJ:1};
+const WORKER_NAME='Sriram';  // this app is locked to one worker
+let curWorker=null;          // resolved Sriram tech id (number), or null until DB loads
+let viewY, viewM;            // calendar month being shown
+let selDate=null;            // 'YYYY-MM-DD' clicked day
+
+/* ---------- helpers ---------- */
+const E=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const $=id=>document.getElementById(id);
+const pad=n=>String(n).padStart(2,'0');
+const ymd=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+const todayStr=()=>ymd(new Date());
+const MON=['January','February','March','April','May','June','July','August','September','October','November','December'];
+function initials(name){return (name||'?').trim().split(/\s+/).map(w=>w[0]).slice(0,2).join('').toUpperCase();}
+function jobTechIds(j){const a=Array.isArray(j.techIds)?j.techIds.slice():[];if(j.techId!=null&&!a.includes(j.techId))a.push(j.techId);return a;}
+function jobsFor(worker){let js=DB.jobs||[];if(worker!=null)js=js.filter(j=>jobTechIds(j).includes(worker));return js;}
+function statusCls(s){return 's-'+String(s||'Assigned').replace(/\s+/g,'-');}
+function bdCls(s){return String(s||'Assigned').replace(/\s+/g,'-');}
+
+function toast(msg,kind=''){const t=$('toast');t.className='toast on '+kind;t.textContent=msg;clearTimeout(t._t);t._t=setTimeout(()=>t.className='toast',2600);}
+
+/* ---------- Firebase ---------- */
+function setSync(state,txt){const el=$('sync');el.className='sync '+state;$('syncTxt').textContent=txt;}
+function initFB(){
+  try{
+    if(!firebase.apps.length)firebase.initializeApp(FB_CFG);
+    fbDB=firebase.database();
+    fbDB.ref(FB_PATH).on('value',s=>{
+      const v=s.val()||{};
+      DB.techs=Array.isArray(v.techs)?v.techs:[];
+      DB.jobs=Array.isArray(v.jobs)?v.jobs:[];
+      DB.nJ=typeof v.nJ==='number'?v.nJ:(DB.jobs.reduce((m,j)=>Math.max(m,j.id||0),0)+1);
+      setSync('on','Live');
+      renderWorkers(); render();
+      publishToShared();              // mirror Sriram's bookings to the shared calendar
+    },err=>{setSync('err','Offline');toast('Firebase error: '+err.message,'error');});
+    // Two-way: read every OTHER CRM's events (incl. Amway) from the shared node
+    fbDB.ref(SHARED_NODE).on('value',s=>{
+      const d=s.val()||{};const out=[];
+      Object.keys(d).forEach(k=>{
+        if(k===MY_TAG)return;          // skip our own block
+        const block=d[k];if(!block||!block.events)return;
+        const evs=Array.isArray(block.events)?block.events:Object.values(block.events);
+        out.push(...evs);
+      });
+      _sharedEvents=out;
+      render();
+    });
+  }catch(e){setSync('err','Error');toast('Init failed: '+e.message,'error');}
+}
+
+/* Publish Sriram's active, dated bookings to SHARED_NODE/MY_TAG in the shape
+   AmwayCRM consumes. set() on our own sub-key only — never touches octoCRM_v4
+   or other apps' blocks. Completed/Cancelled jobs are dropped so they vanish
+   from the shared calendar automatically. */
+function publishToShared(){
+  if(!fbDB||curWorker==null)return;
+  const events=jobsFor(curWorker)
+    .filter(j=>j.date&&j.status!=='Completed'&&j.status!=='Cancelled')
+    .map(j=>{
+      const names=jobTechIds(j).map(id=>{const t=DB.techs.find(x=>x.id===id);return t?t.name:null;}).filter(Boolean).join(', ');
+      return {
+        id:'octobk-job-'+j.id,        // stable per job → edits update, not duplicate
+        title:j.title||'Job',
+        date:j.date,time:j.time||'',
+        customer:j.customer||'',
+        techIds:jobTechIds(j),techNames:names,
+        type:j.type||'Service',priority:j.priority||'Medium',
+        status:j.status||'Assigned',
+        appliance:j.model||j.machine||'',
+        source:MY_TAG,sourceLabel:MY_LABEL
+      };
+    });
+  const block={events,updated:new Date().toISOString()};
+  const json=JSON.stringify(block.events);
+  if(json===_lastPublished)return;     // nothing changed — skip the write
+  _lastPublished=json;
+  fbDB.ref(SHARED_NODE+'/'+MY_TAG).set(block).catch(err=>console.warn('shared cal push:',err));
+}
+
+/* multi-user safe id: transaction on octoCRM_v4/nJ (mirrors report-num pattern) */
+async function claimNextJobId(){
+  const res=await fbDB.ref(FB_PATH+'/nJ').transaction(cur=>(typeof cur==='number'&&cur>0?cur:(DB.nJ||1))+1);
+  const after=res.snapshot.val();   // value AFTER increment
+  return after-1;                   // the id we own
+}
+/* append job via array transaction — never set()s the whole DB */
+async function pushJob(job){
+  await fbDB.ref(FB_PATH+'/jobs').transaction(arr=>{
+    const a=Array.isArray(arr)?arr:[];
+    const i=a.findIndex(x=>x&&x.id===job.id);
+    if(i>=0)a[i]=job;else a.push(job);
+    return a;
+  });
+}
+
+/* ---------- worker (locked to Sriram) ---------- */
+function resolveWorker(){
+  const t=DB.techs.find(x=>new RegExp(WORKER_NAME,'i').test(x.name||''));
+  curWorker=t?t.id:null;
+  if(t){$('bWk').value=String(t.id);$('bWkName').value=t.name;}
+  return t;
+}
+function renderWorkers(){resolveWorker();renderWorkerBox();}
+function renderWorkerBox(){
+  const box=$('wkrBox');
+  const t=DB.techs.find(x=>x.id===curWorker);
+  if(!t){box.innerHTML=`<div class="wkr"><div class="ava">?</div><div class="meta"><b>${E(WORKER_NAME)} not found</b><span>Add a technician named “${E(WORKER_NAME)}” in OctoCRM first.</span></div></div>`;return;}
+  const active=jobsFor(curWorker).filter(j=>j.status!=='Completed').length;
+  const wa=(t.phone||'').replace(/[^0-9]/g,'');
+  box.innerHTML=`<div class="wkr">
+    <div class="ava">${E(initials(t.name))}</div>
+    <div class="meta"><b>${E(t.name)}</b><span>${E(t.spec||'General')}${t.phone?' · '+E(t.phone):''}</span></div>
+    <span class="pill ${active?'busy':'ok'}">${active?active+' active':'Available'}</span>
+    <div class="right">${wa?`<a class="btn btn-sm" href="https://wa.me/${wa}" target="_blank" style="color:var(--wa);text-decoration:none">WhatsApp</a>`:''}</div>
+  </div>`;
+}
+
+/* ---------- calendar ---------- */
+function moveMonth(d){viewM+=d;if(viewM<0){viewM=11;viewY--;}if(viewM>11){viewM=0;viewY++;}render();}
+function goToday(){const n=new Date();viewY=n.getFullYear();viewM=n.getMonth();selDate=todayStr();render();}
+function render(){
+  $('calTitle').textContent=`${MON[viewM]} ${viewY}`;
+  const first=new Date(viewY,viewM,1);
+  let lead=(first.getDay()+6)%7;                       // make Monday=0
+  const dim=new Date(viewY,viewM+1,0).getDate();
+  const tStr=todayStr();
+  const byDay={};
+  jobsFor(curWorker).forEach(j=>{if(j.date){(byDay[j.date]=byDay[j.date]||[]).push(j);}});
+  const extByDay={};
+  _sharedEvents.forEach(e=>{if(e.date){(extByDay[e.date]=extByDay[e.date]||[]).push(e);}});
+  let cells='';
+  for(let i=0;i<lead;i++)cells+='<div class="cell pad"></div>';
+  for(let d=1;d<=dim;d++){
+    const ds=`${viewY}-${pad(viewM+1)}-${pad(d)}`;
+    const evs=(byDay[ds]||[]).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
+    const ext=(extByDay[ds]||[]).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
+    const cap=2;
+    const mine=evs.slice(0,cap).map(j=>`<div class="ev ${statusCls(j.status)}" title="${j.time?E(j.time)+' ':''}${E(j.title||'(untitled)')}">${E(j.title||'(untitled)')}</div>`).join('');
+    const room=Math.max(0,cap-evs.length);
+    const extShown=ext.slice(0,room).map(e=>`<div class="ev ext" title="🔗 ${E(e.sourceLabel||'Other CRM')}: ${E(e.title||'')}">🔗 ${E(e.title||'')}</div>`).join('');
+    const extra=Math.max(0,evs.length-cap)+Math.max(0,ext.length-room);
+    const more=extra?`<div class="more">+${extra} more</div>`:'';
+    cells+=`<div class="cell ${ds===tStr?'today':''} ${ds===selDate?'sel':''}" onclick="pickDay('${ds}')">
+      <span class="dn">${d}</span>${mine}${extShown}${more}</div>`;
+  }
+  const total=lead+dim;const trail=(7-total%7)%7;
+  for(let i=0;i<trail;i++)cells+='<div class="cell pad"></div>';
+  $('grid').innerHTML=cells;
+  renderDay();
+}
+function pickDay(ds){selDate=ds;render();}
+function renderDay(){
+  const box=$('dayBox');
+  if(!selDate){box.innerHTML='';return;}
+  const [y,m,d]=selDate.split('-').map(Number);
+  const dateLbl=new Date(y,m-1,d).toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long'});
+  const evs=jobsFor(curWorker).filter(j=>j.date===selDate).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
+  const ext=_sharedEvents.filter(e=>e.date===selDate).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
+  const totalEv=evs.length+ext.length;
+  let html=`<h3>${E(dateLbl)} · ${totalEv} booking${totalEv===1?'':'s'} <button class="btn btn-sm btn-p" style="float:right" onclick="openBooking('${selDate}')">+ Book this day</button></h3>`;
+  if(!evs.length){html+='<div class="es">No bookings for Sriram. Tap “Book this day” to add one.</div>';}
+  else html+=evs.map(j=>{
+    const techs=jobTechIds(j).map(id=>{const t=DB.techs.find(x=>x.id===id);return t?t.name:null;}).filter(Boolean).join(', ')||'Unassigned';
+    return `<div class="jc ${statusCls(j.status)}">
+      <div class="jc-top"><b>${E(j.title||'(untitled)')}</b><span class="bd ${bdCls(j.status)}">${E(j.status||'Assigned')}</span></div>
+      <div class="jc-meta">
+        ${j.time?`<span>🕑 ${E(j.time)}</span>`:''}
+        ${j.customer?`<span>🏢 ${E(j.customer)}</span>`:''}
+        <span>👷 ${E(techs)}</span>
+        ${j.model||j.machine?`<span>⚙️ ${E(j.model||'')} ${E(j.machine||'')}</span>`:''}
+        ${j.type?`<span>🔧 ${E(j.type)}</span>`:''}
+      </div>
+      ${j.desc?`<div class="jc-meta" style="color:var(--t3)">${E(j.desc)}</div>`:''}
+      <div style="margin-top:8px"><button class="btn btn-sm" onclick="editBooking(${j.id})">Edit</button></div>
+    </div>`;
+  }).join('');
+  if(ext.length){
+    html+=`<h3 style="margin-top:18px;color:var(--pu)">🔗 Other CRM bookings · ${ext.length}</h3>`;
+    html+=ext.map(e=>`<div class="jc ext">
+      <div class="jc-top"><b>${E(e.title||'(untitled)')}</b><span class="bd" style="color:var(--pu)">${E(e.sourceLabel||'Other')}</span></div>
+      <div class="jc-meta">
+        ${e.time?`<span>🕑 ${E(e.time)}</span>`:''}
+        ${e.customer?`<span>🏢 ${E(e.customer)}</span>`:''}
+        ${e.techNames?`<span>👷 ${E(e.techNames)}</span>`:''}
+        ${e.type?`<span>🔧 ${E(e.type)}</span>`:''}
+        ${e.status?`<span>📌 ${E(e.status)}</span>`:''}
+      </div>
+    </div>`).join('');
+  }
+  box.innerHTML=html;
+}
+
+/* ---------- booking modal ---------- */
+function openBooking(date){
+  if(curWorker==null){toast(`Worker “${WORKER_NAME}” not found in OctoCRM.`,'error');return;}
+  $('mTitle').textContent='New Booking';$('bEid').value='';$('bSave').textContent='Save Booking';
+  $('bTi').value='';$('bCu').value='';$('bMc').value='';$('bMo').value='';$('bAd').value='';$('bDs').value='';
+  $('bTm').value='09:00';$('bTy').value='Preventive Maintenance';$('bPr').value='Medium';
+  $('bDt').value=date||selDate||todayStr();
+  $('bWk').value=String(curWorker);
+  $('ov').classList.add('on');setTimeout(()=>$('bTi').focus(),50);
+}
+function editBooking(id){
+  const j=(DB.jobs||[]).find(x=>x.id===id);if(!j)return;
+  $('mTitle').textContent='Edit Booking';$('bEid').value=String(id);$('bSave').textContent='Update Booking';
+  $('bTi').value=j.title||'';$('bCu').value=j.customer||'';$('bMc').value=j.machine||'';$('bMo').value=j.model||'';
+  $('bAd').value=j.address||'';$('bDs').value=j.desc||'';$('bDt').value=j.date||todayStr();$('bTm').value=j.time||'';
+  $('bTy').value=j.type||'Preventive Maintenance';$('bPr').value=j.priority||'Medium';
+  $('bWk').value=String(curWorker);
+  $('ov').classList.add('on');
+}
+function closeModal(){$('ov').classList.remove('on');}
+
+function waBooking(){
+  const t=DB.techs.find(x=>x.id===curWorker);
+  const wa=((t&&t.phone)||'').replace(/[^0-9]/g,'');
+  if(!wa){toast('No WhatsApp number for this worker.','error');return;}
+  const v=id=>($(id).value||'').trim();
+  const L=[];
+  L.push('📋 *Booking Details*');
+  if(v('bTi'))L.push('• *Job:* '+v('bTi'));
+  if(v('bCu'))L.push('• *Customer:* '+v('bCu'));
+  if(v('bDt'))L.push('• *Date:* '+v('bDt')+(v('bTm')?' '+v('bTm'):''));
+  if(v('bTy'))L.push('• *Type:* '+v('bTy'));
+  if(v('bPr'))L.push('• *Priority:* '+v('bPr'));
+  if(v('bMc')||v('bMo'))L.push('• *Machine:* '+[v('bMo'),v('bMc')].filter(Boolean).join(' '));
+  if(v('bAd'))L.push('• *Address:* '+v('bAd'));
+  if(v('bDs'))L.push('• *Notes:* '+v('bDs'));
+  if(L.length<2){toast('Fill in the booking first.','error');return;}
+  window.open(`https://wa.me/${wa}?text=${encodeURIComponent(L.join('\n'))}`,'_blank');
+}
+
+async function saveBooking(){
+  const title=$('bTi').value.trim();
+  const wid=$('bWk').value;
+  const date=$('bDt').value;
+  if(!title){toast('Job title required.','error');return;}
+  if(!wid){toast('Pick a worker.','error');return;}
+  if(!date){toast('Pick a date.','error');return;}
+  const techId=parseInt(wid,10);
+  const eid=$('bEid').value;
+  // preserve any co-assigned technicians on an existing job; always include Sriram
+  const cur=eid?((DB.jobs||[]).find(x=>x.id===parseInt(eid,10))||{}):{};
+  const keepIds=jobTechIds(cur);const techIds=keepIds.includes(techId)?keepIds:[techId,...keepIds];
+  const fields={
+    title, customer:$('bCu').value.trim(), machine:$('bMc').value.trim(), model:$('bMo').value.trim(),
+    address:$('bAd').value.trim(), desc:$('bDs').value.trim(), date, time:$('bTm').value,
+    type:$('bTy').value, priority:$('bPr').value, techIds, techId:techIds[0],
+  };
+  const btn=$('bSave');btn.disabled=true;btn.textContent='Saving…';
+  try{
+    if(eid){
+      const job={...cur,...fields,status:cur.status||'Assigned'};
+      await pushJob(job);
+      toast('Booking updated.','success');
+    }else{
+      const id=await claimNextJobId();
+      const job={id,...fields,status:'Assigned',createdAt:new Date().toISOString(),waSent:false,startTime:null,endTime:null,followUp:''};
+      await pushJob(job);
+      selDate=date;
+      toast('Booking created.','success');
+    }
+    closeModal();
+  }catch(e){toast('Save failed: '+e.message,'error');}
+  finally{btn.disabled=false;btn.textContent=eid?'Update Booking':'Save Booking';}
+}
+
+/* close modal on backdrop / Esc */
+$('ov').addEventListener('click',e=>{if(e.target.id==='ov')closeModal();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
+
+/* ---------- boot ---------- */
+(function(){const n=new Date();viewY=n.getFullYear();viewM=n.getMonth();selDate=todayStr();render();})();
+(function loadFB(){
+  const s1=document.createElement('script');
+  s1.src='https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js';
+  s1.onload=()=>{const s2=document.createElement('script');
+    s2.src='https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js';
+    s2.onload=initFB;s2.onerror=()=>setSync('err','SDK failed');document.head.appendChild(s2);};
+  s1.onerror=()=>setSync('err','SDK failed');
+  document.head.appendChild(s1);
+})();
+</script>
+</body>
+</html>
