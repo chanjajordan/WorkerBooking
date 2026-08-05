@@ -1,16 +1,18 @@
 <!DOCTYPE html>
 <!--
   OctoCRM — Worker Booking
-  Standalone single-file companion app. Shares the SAME Firebase Realtime DB
-  (octoCRM_v4) as maintenance-crm1.html. Reads techs[] + jobs[], shows a
-  per-worker calendar, and creates bookings as jobs.
+  Standalone single-file companion app. READS techs[] + jobs[] from the shared
+  Firebase Realtime DB (octoCRM_v4) for display only. Bookings created here are
+  CALENDAR-ONLY: stored under sharedFieldServiceCal_v1/octopack (the cross-CRM
+  shared calendar Amway also reads) — they are NEVER written to octoCRM_v4/jobs
+  and never appear on the OctoCRM Job Board.
 
   Architecture rules honoured (see CLAUDE.md):
-   - Never set() the whole DB. Writes go through per-key transactions on
-     octoCRM_v4/jobs and octoCRM_v4/nJ only. Reports are never touched.
-   - Job shape matches the main app:
-     {id,title,customer,machine,model,techId,techIds[],type,priority,
-      date,time,desc,status,createdAt,waSent,...}
+   - octoCRM_v4 is never written by this app at all (read-only listener).
+   - Shared-cal writes set() ONLY our own sub-key (sharedFieldServiceCal_v1/
+     octopack) — never another app's block. Allowed tags: amway / octopack.
+   - Booking ids are prefixed 'octobk-bk-'; mirrored OctoCRM jobs use
+     'octobk-job-<id>' so edits update rather than duplicate.
 -->
 <html lang="en">
 <head>
@@ -191,7 +193,8 @@
       <input type="hidden" id="bEid">
     </div>
     <div class="modal-f">
-      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-ghost" onclick="closeModal()">Close</button>
+      <button class="btn btn-d" id="bDel" onclick="cancelBooking()" style="display:none">Cancel Booking</button>
       <button class="btn btn-wa" id="bWa" onclick="waBooking()">WhatsApp Worker</button>
       <button class="btn btn-p" id="bSave" onclick="saveBooking()">Save Booking</button>
     </div>
@@ -213,6 +216,9 @@ const SHARED_NODE='sharedFieldServiceCal_v1';
 const MY_TAG='octopack';               // shared-cal tag for the OctoCRM side (must differ from Amway's 'amway')
 const MY_LABEL='OctoCRM · Sriram';
 let _sharedEvents=[];                   // incoming events from OTHER tags
+let _myBookings=[];                     // calendar-only bookings created HERE (id 'octobk-bk-*')
+let _sharedLoaded=false;                // guard: never publish before first shared-node read,
+                                        // else we'd set() our block with empty bookings and wipe them
 let _lastPublished='';                  // dedupe: JSON of last block we pushed
 
 let fbDB=null, DB={techs:[],jobs:[],nJ:1};
@@ -230,7 +236,9 @@ const todayStr=()=>ymd(new Date());
 const MON=['January','February','March','April','May','June','July','August','September','October','November','December'];
 function initials(name){return (name||'?').trim().split(/\s+/).map(w=>w[0]).slice(0,2).join('').toUpperCase();}
 function jobTechIds(j){const a=Array.isArray(j.techIds)?j.techIds.slice():[];if(j.techId!=null&&!a.includes(j.techId))a.push(j.techId);return a;}
-function jobsFor(worker){let js=DB.jobs||[];if(worker!=null)js=js.filter(j=>jobTechIds(j).includes(worker));return js;}
+// null worker = Sriram not resolved yet (or missing) — show NOTHING rather
+// than every technician's jobs with editable cards.
+function jobsFor(worker){if(worker==null)return [];return (DB.jobs||[]).filter(j=>jobTechIds(j).includes(worker));}
 function statusCls(s){return 's-'+String(s||'Assigned').replace(/\s+/g,'-');}
 function bdCls(s){return String(s||'Assigned').replace(/\s+/g,'-');}
 
@@ -251,17 +259,24 @@ function initFB(){
       renderWorkers(); render();
       publishToShared();              // mirror Sriram's bookings to the shared calendar
     },err=>{setSync('err','Offline');toast('Firebase error: '+err.message,'error');});
-    // Two-way: read every OTHER CRM's events (incl. Amway) from the shared node
+    // Two-way: read every OTHER CRM's events (incl. Amway) from the shared node.
+    // Our OWN block carries the calendar-only bookings (id 'octobk-bk-*') —
+    // extract those into _myBookings; they are the source of truth for bookings.
     fbDB.ref(SHARED_NODE).on('value',s=>{
       const d=s.val()||{};const out=[];
       Object.keys(d).forEach(k=>{
-        if(k===MY_TAG)return;          // skip our own block
         const block=d[k];if(!block||!block.events)return;
         const evs=Array.isArray(block.events)?block.events:Object.values(block.events);
+        if(k===MY_TAG){
+          _myBookings=evs.filter(e=>e&&String(e.id||'').indexOf('octobk-bk-')===0);
+          return;
+        }
         out.push(...evs);
       });
       _sharedEvents=out;
+      _sharedLoaded=true;
       render();
+      publishToShared();   // safe now — bookings loaded
     });
   }catch(e){setSync('err','Error');toast('Init failed: '+e.message,'error');}
 }
@@ -271,8 +286,9 @@ function initFB(){
    or other apps' blocks. Completed/Cancelled jobs are dropped so they vanish
    from the shared calendar automatically. */
 function publishToShared(){
-  if(!fbDB||curWorker==null)return;
-  const events=jobsFor(curWorker)
+  if(!fbDB||!_sharedLoaded)return;
+  // Mirror Sriram's active OctoCRM jobs (read-only) so Amway sees them…
+  const jobMirror=(curWorker==null?[]:jobsFor(curWorker))
     .filter(j=>j.date&&j.status!=='Completed'&&j.status!=='Cancelled')
     .map(j=>{
       const names=jobTechIds(j).map(id=>{const t=DB.techs.find(x=>x.id===id);return t?t.name:null;}).filter(Boolean).join(', ');
@@ -288,27 +304,24 @@ function publishToShared(){
         source:MY_TAG,sourceLabel:MY_LABEL
       };
     });
+  // …plus the calendar-only bookings created in THIS app.
+  const events=[...jobMirror,..._myBookings];
   const block={events,updated:new Date().toISOString()};
-  const json=JSON.stringify(block.events);
+  const json=JSON.stringify(events);
   if(json===_lastPublished)return;     // nothing changed — skip the write
   _lastPublished=json;
   fbDB.ref(SHARED_NODE+'/'+MY_TAG).set(block).catch(err=>console.warn('shared cal push:',err));
 }
 
-/* multi-user safe id: transaction on octoCRM_v4/nJ (mirrors report-num pattern) */
-async function claimNextJobId(){
-  const res=await fbDB.ref(FB_PATH+'/nJ').transaction(cur=>(typeof cur==='number'&&cur>0?cur:(DB.nJ||1))+1);
-  const after=res.snapshot.val();   // value AFTER increment
-  return after-1;                   // the id we own
+/* ---------- booking CRUD — shared calendar node ONLY, octoCRM_v4 untouched */
+function upsertMyBooking(bk){
+  const i=_myBookings.findIndex(x=>x&&x.id===bk.id);
+  if(i>=0)_myBookings[i]=bk;else _myBookings.push(bk);
+  publishToShared();
 }
-/* append job via array transaction — never set()s the whole DB */
-async function pushJob(job){
-  await fbDB.ref(FB_PATH+'/jobs').transaction(arr=>{
-    const a=Array.isArray(arr)?arr:[];
-    const i=a.findIndex(x=>x&&x.id===job.id);
-    if(i>=0)a[i]=job;else a.push(job);
-    return a;
-  });
+function removeMyBooking(id){
+  _myBookings=_myBookings.filter(x=>!(x&&x.id===id));
+  publishToShared();
 }
 
 /* ---------- worker (locked to Sriram) ---------- */
@@ -323,7 +336,8 @@ function renderWorkerBox(){
   const box=$('wkrBox');
   const t=DB.techs.find(x=>x.id===curWorker);
   if(!t){box.innerHTML=`<div class="wkr"><div class="ava">?</div><div class="meta"><b>${E(WORKER_NAME)} not found</b><span>Add a technician named “${E(WORKER_NAME)}” in OctoCRM first.</span></div></div>`;return;}
-  const active=jobsFor(curWorker).filter(j=>j.status!=='Completed').length;
+  const active=jobsFor(curWorker).filter(j=>j.status!=='Completed').length
+    +_myBookings.filter(b=>b.date>=todayStr()).length;
   const wa=(t.phone||'').replace(/[^0-9]/g,'');
   box.innerHTML=`<div class="wkr">
     <div class="ava">${E(initials(t.name))}</div>
@@ -344,6 +358,7 @@ function render(){
   const tStr=todayStr();
   const byDay={};
   jobsFor(curWorker).forEach(j=>{if(j.date){(byDay[j.date]=byDay[j.date]||[]).push(j);}});
+  _myBookings.forEach(b=>{if(b.date){(byDay[b.date]=byDay[b.date]||[]).push(b);}});
   const extByDay={};
   _sharedEvents.forEach(e=>{if(e.date){(extByDay[e.date]=extByDay[e.date]||[]).push(e);}});
   let cells='';
@@ -372,12 +387,27 @@ function renderDay(){
   if(!selDate){box.innerHTML='';return;}
   const [y,m,d]=selDate.split('-').map(Number);
   const dateLbl=new Date(y,m-1,d).toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long'});
+  const bks=_myBookings.filter(b=>b.date===selDate).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
   const evs=jobsFor(curWorker).filter(j=>j.date===selDate).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
   const ext=_sharedEvents.filter(e=>e.date===selDate).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
-  const totalEv=evs.length+ext.length;
+  const totalEv=bks.length+evs.length+ext.length;
   let html=`<h3>${E(dateLbl)} · ${totalEv} booking${totalEv===1?'':'s'} <button class="btn btn-sm btn-p" style="float:right" onclick="openBooking('${selDate}')">+ Book this day</button></h3>`;
-  if(!evs.length){html+='<div class="es">No bookings for Sriram. Tap “Book this day” to add one.</div>';}
-  else html+=evs.map(j=>{
+  if(!bks.length&&!evs.length){html+='<div class="es">No bookings for Sriram. Tap “Book this day” to add one.</div>';}
+  // Calendar-only bookings (created here) — editable
+  html+=bks.map(b=>`<div class="jc s-Assigned">
+      <div class="jc-top"><b>📌 ${E(b.title||'(untitled)')}</b><span class="bd Assigned">Booking</span></div>
+      <div class="jc-meta">
+        ${b.time?`<span>🕑 ${E(b.time)}</span>`:''}
+        ${b.customer?`<span>🏢 ${E(b.customer)}</span>`:''}
+        <span>👷 ${E(b.techNames||WORKER_NAME)}</span>
+        ${b.appliance?`<span>⚙️ ${E(b.appliance)}</span>`:''}
+        ${b.type?`<span>🔧 ${E(b.type)}</span>`:''}
+      </div>
+      ${b.desc?`<div class="jc-meta" style="color:var(--t3)">${E(b.desc)}</div>`:''}
+      <div style="margin-top:8px;display:flex;gap:8px"><button class="btn btn-sm" onclick="editBooking('${E(b.id)}')">Edit</button><button class="btn btn-sm btn-d" onclick="deleteBooking('${E(b.id)}')">Delete</button></div>
+    </div>`).join('');
+  // OctoCRM jobs — read-only here (managed on the OctoCRM Job Board)
+  html+=evs.map(j=>{
     const techs=jobTechIds(j).map(id=>{const t=DB.techs.find(x=>x.id===id);return t?t.name:null;}).filter(Boolean).join(', ')||'Unassigned';
     return `<div class="jc ${statusCls(j.status)}">
       <div class="jc-top"><b>${E(j.title||'(untitled)')}</b><span class="bd ${bdCls(j.status)}">${E(j.status||'Assigned')}</span></div>
@@ -389,7 +419,7 @@ function renderDay(){
         ${j.type?`<span>🔧 ${E(j.type)}</span>`:''}
       </div>
       ${j.desc?`<div class="jc-meta" style="color:var(--t3)">${E(j.desc)}</div>`:''}
-      <div style="margin-top:8px"><button class="btn btn-sm" onclick="editBooking(${j.id})">Edit</button></div>
+      <div class="jc-meta" style="color:var(--t3)">OctoCRM job — edit on the Job Board</div>
     </div>`;
   }).join('');
   if(ext.length){
@@ -410,24 +440,42 @@ function renderDay(){
 
 /* ---------- booking modal ---------- */
 function openBooking(date){
-  if(curWorker==null){toast(`Worker “${WORKER_NAME}” not found in OctoCRM.`,'error');return;}
   $('mTitle').textContent='New Booking';$('bEid').value='';$('bSave').textContent='Save Booking';
   $('bTi').value='';$('bCu').value='';$('bMc').value='';$('bMo').value='';$('bAd').value='';$('bDs').value='';
   $('bTm').value='09:00';$('bTy').value='Preventive Maintenance';$('bPr').value='Medium';
   $('bDt').value=date||selDate||todayStr();
-  $('bWk').value=String(curWorker);
+  $('bDel').style.display='none';
   $('ov').classList.add('on');setTimeout(()=>$('bTi').focus(),50);
 }
 function editBooking(id){
-  const j=(DB.jobs||[]).find(x=>x.id===id);if(!j)return;
+  const b=_myBookings.find(x=>x&&x.id===id);if(!b)return;
   $('mTitle').textContent='Edit Booking';$('bEid').value=String(id);$('bSave').textContent='Update Booking';
-  $('bTi').value=j.title||'';$('bCu').value=j.customer||'';$('bMc').value=j.machine||'';$('bMo').value=j.model||'';
-  $('bAd').value=j.address||'';$('bDs').value=j.desc||'';$('bDt').value=j.date||todayStr();$('bTm').value=j.time||'';
-  $('bTy').value=j.type||'Preventive Maintenance';$('bPr').value=j.priority||'Medium';
-  $('bWk').value=String(curWorker);
+  $('bTi').value=b.title||'';$('bCu').value=b.customer||'';$('bMc').value=b.machine||'';$('bMo').value=b.model||'';
+  $('bAd').value=b.address||'';$('bDs').value=b.desc||'';$('bDt').value=b.date||todayStr();$('bTm').value=b.time||'';
+  $('bTy').value=b.type||'Preventive Maintenance';$('bPr').value=b.priority||'Medium';
+  $('bDel').style.display='';
   $('ov').classList.add('on');
 }
 function closeModal(){$('ov').classList.remove('on');}
+
+function cancelBooking(){
+  const eid=$('bEid').value;if(!eid)return;
+  const b=_myBookings.find(x=>x&&x.id===eid);
+  if(!confirm(`Cancel this booking?\n\n${(b&&b.title)||'(untitled)'}${b&&b.date?' — '+b.date:''}\n\nThis removes it from the shared calendar permanently.`))return;
+  removeMyBooking(eid);
+  render();
+  toast('Booking cancelled.','success');
+  closeModal();
+}
+
+// Direct delete from the day-list card (skips the edit modal).
+function deleteBooking(id){
+  const b=_myBookings.find(x=>x&&x.id===id);if(!b)return;
+  if(!confirm(`Delete this booking?\n\n${b.title||'(untitled)'}${b.date?' — '+b.date:''}\n\nThis removes it from the shared calendar permanently.`))return;
+  removeMyBooking(id);
+  render();
+  toast('Booking deleted.','success');
+}
 
 function waBooking(){
   const t=DB.techs.find(x=>x.id===curWorker);
@@ -448,39 +496,35 @@ function waBooking(){
   window.open(`https://wa.me/${wa}?text=${encodeURIComponent(L.join('\n'))}`,'_blank');
 }
 
-async function saveBooking(){
+function saveBooking(){
   const title=$('bTi').value.trim();
-  const wid=$('bWk').value;
   const date=$('bDt').value;
   if(!title){toast('Job title required.','error');return;}
-  if(!wid){toast('Pick a worker.','error');return;}
   if(!date){toast('Pick a date.','error');return;}
-  const techId=parseInt(wid,10);
   const eid=$('bEid').value;
-  // preserve any co-assigned technicians on an existing job; always include Sriram
-  const cur=eid?((DB.jobs||[]).find(x=>x.id===parseInt(eid,10))||{}):{};
-  const keepIds=jobTechIds(cur);const techIds=keepIds.includes(techId)?keepIds:[techId,...keepIds];
-  const fields={
-    title, customer:$('bCu').value.trim(), machine:$('bMc').value.trim(), model:$('bMo').value.trim(),
-    address:$('bAd').value.trim(), desc:$('bDs').value.trim(), date, time:$('bTm').value,
-    type:$('bTy').value, priority:$('bPr').value, techIds, techId:techIds[0],
+  const t=DB.techs.find(x=>x.id===curWorker);
+  const model=$('bMo').value.trim(), machine=$('bMc').value.trim();
+  // Shape matches what AmwayCRM consumes (id/title/date/time/customer/techNames/
+  // type/priority/status/appliance/source) + extra fields for our own edit form.
+  const bk={
+    id: eid||('octobk-bk-'+Date.now()),
+    title, date, time:$('bTm').value,
+    customer:$('bCu').value.trim(),
+    techIds:curWorker!=null?[curWorker]:[],
+    techNames:(t&&t.name)||WORKER_NAME,
+    type:$('bTy').value, priority:$('bPr').value,
+    status:'Booked',
+    appliance:[model,machine].filter(Boolean).join(' '),
+    machine, model,
+    address:$('bAd').value.trim(), desc:$('bDs').value.trim(),
+    source:MY_TAG, sourceLabel:MY_LABEL,
+    createdAt:eid?((_myBookings.find(x=>x&&x.id===eid)||{}).createdAt||new Date().toISOString()):new Date().toISOString()
   };
-  const btn=$('bSave');btn.disabled=true;btn.textContent='Saving…';
-  try{
-    if(eid){
-      const job={...cur,...fields,status:cur.status||'Assigned'};
-      await pushJob(job);
-      toast('Booking updated.','success');
-    }else{
-      const id=await claimNextJobId();
-      const job={id,...fields,status:'Assigned',createdAt:new Date().toISOString(),waSent:false,startTime:null,endTime:null,followUp:''};
-      await pushJob(job);
-      selDate=date;
-      toast('Booking created.','success');
-    }
-    closeModal();
-  }catch(e){toast('Save failed: '+e.message,'error');}
-  finally{btn.disabled=false;btn.textContent=eid?'Update Booking':'Save Booking';}
+  upsertMyBooking(bk);
+  selDate=date; // follow the booking if its date changed
+  render();
+  toast(eid?'Booking updated.':'Booking created.','success');
+  closeModal();
 }
 
 /* close modal on backdrop / Esc */
