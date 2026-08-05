@@ -17,7 +17,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <title>OctoCRM — Worker Booking</title>
 <style>
   :root{
@@ -37,7 +37,7 @@
   .sync .led{width:8px;height:8px;border-radius:50%;background:var(--t3)}
   .sync.on .led{background:var(--ok);box-shadow:0 0 8px var(--ok)}
   .sync.err .led{background:var(--er)}
-  .wrap{max-width:980px;margin:0 auto;padding:16px}
+  .wrap{max-width:980px;margin:0 auto;padding:16px;padding-bottom:calc(96px + env(safe-area-inset-bottom))}
   .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px}
   .fg{display:flex;flex-direction:column;gap:5px}
   .fg label{font-size:var(--fs-xs);color:var(--t2);text-transform:uppercase;letter-spacing:.5px;font-weight:600}
@@ -110,13 +110,13 @@
   /* Modal */
   .ov{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:flex-start;justify-content:center;z-index:50;padding:20px;overflow:auto}
   .ov.on{display:flex}
-  .modal{background:var(--panel);border:1px solid var(--bdr);border-radius:14px;width:100%;max-width:520px;margin:auto}
+  .modal{background:var(--panel);border:1px solid var(--bdr);border-radius:14px;width:100%;max-width:520px;display:flex;flex-direction:column;max-height:100vh;max-height:calc(100dvh - 40px)}
   .modal-h{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--bdr)}
   .modal-h b{font-size:16px}
   .x{background:none;border:none;color:var(--t2);font-size:24px;cursor:pointer;line-height:1;padding:0 4px}
-  .modal-b{padding:16px 18px;display:flex;flex-direction:column;gap:12px}
+  .modal-b{padding:16px 18px;display:flex;flex-direction:column;gap:12px;overflow-y:auto;flex:1 1 auto;min-height:0}
   .fr{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  .modal-f{padding:14px 18px;border-top:1px solid var(--bdr);display:flex;gap:10px;justify-content:flex-end}
+  .modal-f{padding:14px 18px;border-top:1px solid var(--bdr);display:flex;gap:10px;justify-content:flex-end;flex:none}
 
   .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--bdr);border-left:3px solid var(--ac);color:var(--t1);padding:12px 18px;border-radius:10px;font-size:14px;z-index:80;opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;max-width:90vw}
   .toast.on{opacity:1;transform:translateX(-50%) translateY(-4px)}
@@ -124,7 +124,7 @@
   @media(max-width:560px){
     .cell{height:78px} .cell .dn{font-size:11px}
     .ev{font-size:10px;padding:2px 4px} .fr{grid-template-columns:1fr}
-    .wrap{padding:12px}
+    .wrap{padding:12px;padding-bottom:calc(96px + env(safe-area-inset-bottom))}
   }
 </style>
 </head>
@@ -166,11 +166,21 @@
       <div class="fg"><label>Job Title *</label><input class="fc" id="bTi" placeholder="PM Service — ABB Changi"></div>
       <div class="fr">
         <div class="fg"><label>Worker</label><input class="fc" id="bWkName" value="Sriram" disabled style="opacity:.8"><input type="hidden" id="bWk"></div>
-        <div class="fg"><label>Customer</label><input class="fc" id="bCu" placeholder="Customer name"></div>
+        <div class="fg"><label>Company</label>
+          <select class="fc" id="bCo">
+            <option value="">— Select company —</option>
+            <option>OCTO WAREHOUSE</option><option>PHILIPS MART</option><option>OCTOPACK</option>
+            <option>AMWAY</option><option>TJEAN</option><option>JW SUPPLIES</option><option>TRIDENT</option>
+          </select>
+        </div>
       </div>
       <div class="fr">
+        <div class="fg"><label>Customer</label><input class="fc" id="bCu" placeholder="Customer name"></div>
         <div class="fg"><label>Date *</label><input class="fc" type="date" id="bDt"></div>
-        <div class="fg"><label>Time</label><input class="fc" type="time" id="bTm"></div>
+      </div>
+      <div class="fr">
+        <div class="fg"><label>Start Time</label><input class="fc" type="time" id="bTm"></div>
+        <div class="fg"><label>End Time</label><input class="fc" type="time" id="bTmEnd"></div>
       </div>
       <div class="fr">
         <div class="fg"><label>Type</label>
@@ -188,7 +198,8 @@
         <div class="fg"><label>Machine / Serial</label><input class="fc" id="bMc" placeholder="B88357"></div>
         <div class="fg"><label>Model</label><input class="fc" id="bMo" placeholder="TP-601Y1"></div>
       </div>
-      <div class="fg"><label>Address</label><input class="fc" id="bAd" placeholder="Site address"></div>
+      <div class="fg"><label>Collection Address</label><input class="fc" id="bCollAd" placeholder="Pickup / collection site"></div>
+      <div class="fg"><label>Delivery Address</label><input class="fc" id="bDelAd" placeholder="Drop-off / delivery site"></div>
       <div class="fg"><label>Description</label><textarea class="fc" id="bDs" placeholder="What needs doing…"></textarea></div>
       <input type="hidden" id="bEid">
     </div>
@@ -397,12 +408,15 @@ function renderDay(){
   html+=bks.map(b=>`<div class="jc s-Assigned">
       <div class="jc-top"><b>📌 ${E(b.title||'(untitled)')}</b><span class="bd Assigned">Booking</span></div>
       <div class="jc-meta">
-        ${b.time?`<span>🕑 ${E(b.time)}</span>`:''}
+        ${b.time?`<span>🕑 ${E(b.time)}${b.timeEnd?' – '+E(b.timeEnd):''}</span>`:''}
+        ${b.company?`<span>🏬 ${E(b.company)}</span>`:''}
         ${b.customer?`<span>🏢 ${E(b.customer)}</span>`:''}
         <span>👷 ${E(b.techNames||WORKER_NAME)}</span>
         ${b.appliance?`<span>⚙️ ${E(b.appliance)}</span>`:''}
         ${b.type?`<span>🔧 ${E(b.type)}</span>`:''}
       </div>
+      ${(b.collectionAddress||b.address)?`<div class="jc-meta"><span>📦 Collect: ${E(b.collectionAddress||b.address)}</span></div>`:''}
+      ${b.deliveryAddress?`<div class="jc-meta"><span>📍 Deliver: ${E(b.deliveryAddress)}</span></div>`:''}
       ${b.desc?`<div class="jc-meta" style="color:var(--t3)">${E(b.desc)}</div>`:''}
       <div style="margin-top:8px;display:flex;gap:8px"><button class="btn btn-sm" onclick="editBooking('${E(b.id)}')">Edit</button><button class="btn btn-sm btn-d" onclick="deleteBooking('${E(b.id)}')">Delete</button></div>
     </div>`).join('');
@@ -441,8 +455,9 @@ function renderDay(){
 /* ---------- booking modal ---------- */
 function openBooking(date){
   $('mTitle').textContent='New Booking';$('bEid').value='';$('bSave').textContent='Save Booking';
-  $('bTi').value='';$('bCu').value='';$('bMc').value='';$('bMo').value='';$('bAd').value='';$('bDs').value='';
-  $('bTm').value='09:00';$('bTy').value='Preventive Maintenance';$('bPr').value='Medium';
+  $('bTi').value='';$('bCu').value='';$('bMc').value='';$('bMo').value='';$('bDs').value='';
+  $('bCo').value='';$('bCollAd').value='';$('bDelAd').value='';
+  $('bTm').value='09:00';$('bTmEnd').value='10:00';$('bTy').value='Preventive Maintenance';$('bPr').value='Medium';
   $('bDt').value=date||selDate||todayStr();
   $('bDel').style.display='none';
   $('ov').classList.add('on');setTimeout(()=>$('bTi').focus(),50);
@@ -451,7 +466,9 @@ function editBooking(id){
   const b=_myBookings.find(x=>x&&x.id===id);if(!b)return;
   $('mTitle').textContent='Edit Booking';$('bEid').value=String(id);$('bSave').textContent='Update Booking';
   $('bTi').value=b.title||'';$('bCu').value=b.customer||'';$('bMc').value=b.machine||'';$('bMo').value=b.model||'';
-  $('bAd').value=b.address||'';$('bDs').value=b.desc||'';$('bDt').value=b.date||todayStr();$('bTm').value=b.time||'';
+  $('bCo').value=b.company||'';
+  $('bCollAd').value=b.collectionAddress||b.address||'';$('bDelAd').value=b.deliveryAddress||'';
+  $('bDs').value=b.desc||'';$('bDt').value=b.date||todayStr();$('bTm').value=b.time||'';$('bTmEnd').value=b.timeEnd||'';
   $('bTy').value=b.type||'Preventive Maintenance';$('bPr').value=b.priority||'Medium';
   $('bDel').style.display='';
   $('ov').classList.add('on');
@@ -485,12 +502,14 @@ function waBooking(){
   const L=[];
   L.push('📋 *Booking Details*');
   if(v('bTi'))L.push('• *Job:* '+v('bTi'));
+  if(v('bCo'))L.push('• *Company:* '+v('bCo'));
   if(v('bCu'))L.push('• *Customer:* '+v('bCu'));
-  if(v('bDt'))L.push('• *Date:* '+v('bDt')+(v('bTm')?' '+v('bTm'):''));
+  if(v('bDt'))L.push('• *Date:* '+v('bDt')+(v('bTm')?' '+v('bTm')+(v('bTmEnd')?'–'+v('bTmEnd'):''):''));
   if(v('bTy'))L.push('• *Type:* '+v('bTy'));
   if(v('bPr'))L.push('• *Priority:* '+v('bPr'));
   if(v('bMc')||v('bMo'))L.push('• *Machine:* '+[v('bMo'),v('bMc')].filter(Boolean).join(' '));
-  if(v('bAd'))L.push('• *Address:* '+v('bAd'));
+  if(v('bCollAd'))L.push('• *Collection:* '+v('bCollAd'));
+  if(v('bDelAd'))L.push('• *Delivery:* '+v('bDelAd'));
   if(v('bDs'))L.push('• *Notes:* '+v('bDs'));
   if(L.length<2){toast('Fill in the booking first.','error');return;}
   window.open(`https://wa.me/${wa}?text=${encodeURIComponent(L.join('\n'))}`,'_blank');
@@ -508,7 +527,8 @@ function saveBooking(){
   // type/priority/status/appliance/source) + extra fields for our own edit form.
   const bk={
     id: eid||('octobk-bk-'+Date.now()),
-    title, date, time:$('bTm').value,
+    title, date, time:$('bTm').value, timeEnd:$('bTmEnd').value,
+    company:$('bCo').value,
     customer:$('bCu').value.trim(),
     techIds:curWorker!=null?[curWorker]:[],
     techNames:(t&&t.name)||WORKER_NAME,
@@ -516,7 +536,8 @@ function saveBooking(){
     status:'Booked',
     appliance:[model,machine].filter(Boolean).join(' '),
     machine, model,
-    address:$('bAd').value.trim(), desc:$('bDs').value.trim(),
+    collectionAddress:$('bCollAd').value.trim(), deliveryAddress:$('bDelAd').value.trim(),
+    desc:$('bDs').value.trim(),
     source:MY_TAG, sourceLabel:MY_LABEL,
     createdAt:eid?((_myBookings.find(x=>x&&x.id===eid)||{}).createdAt||new Date().toISOString()):new Date().toISOString()
   };
