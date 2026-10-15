@@ -178,6 +178,7 @@
         <div class="fg"><label>Customer</label><input class="fc" id="bCu" placeholder="Customer name"></div>
         <div class="fg"><label>Date *</label><input class="fc" type="date" id="bDt"></div>
       </div>
+      <div class="fg"><label>Contact Number</label><input class="fc" type="tel" id="bCp" placeholder="+65 9123 4567" inputmode="tel"></div>
       <div class="fr">
         <div class="fg"><label>Start Time</label><input class="fc" type="time" id="bTm"></div>
         <div class="fg"><label>End Time</label><input class="fc" type="time" id="bTmEnd"></div>
@@ -411,6 +412,7 @@ function renderDay(){
         ${b.time?`<span>🕑 ${E(b.time)}${b.timeEnd?' – '+E(b.timeEnd):''}</span>`:''}
         ${b.company?`<span>🏬 ${E(b.company)}</span>`:''}
         ${b.customer?`<span>🏢 ${E(b.customer)}</span>`:''}
+        ${b.contactNumber?`<span>📞 <a href="tel:${E(String(b.contactNumber).replace(/[^0-9+]/g,''))}" style="color:var(--ac);text-decoration:none">${E(b.contactNumber)}</a></span>`:''}
         <span>👷 ${E(b.techNames||WORKER_NAME)}</span>
         ${b.appliance?`<span>⚙️ ${E(b.appliance)}</span>`:''}
         ${b.type?`<span>🔧 ${E(b.type)}</span>`:''}
@@ -456,7 +458,7 @@ function renderDay(){
 function openBooking(date){
   $('mTitle').textContent='New Booking';$('bEid').value='';$('bSave').textContent='Save Booking';
   $('bTi').value='';$('bCu').value='';$('bMc').value='';$('bMo').value='';$('bDs').value='';
-  $('bCo').value='';$('bCollAd').value='';$('bDelAd').value='';
+  $('bCo').value='';$('bCollAd').value='';$('bDelAd').value='';$('bCp').value='';
   $('bTm').value='09:00';$('bTmEnd').value='10:00';$('bTy').value='Preventive Maintenance';$('bPr').value='Medium';
   $('bDt').value=date||selDate||todayStr();
   $('bDel').style.display='none';
@@ -467,7 +469,7 @@ function editBooking(id){
   $('mTitle').textContent='Edit Booking';$('bEid').value=String(id);$('bSave').textContent='Update Booking';
   $('bTi').value=b.title||'';$('bCu').value=b.customer||'';$('bMc').value=b.machine||'';$('bMo').value=b.model||'';
   $('bCo').value=b.company||'';
-  $('bCollAd').value=b.collectionAddress||b.address||'';$('bDelAd').value=b.deliveryAddress||'';
+  $('bCollAd').value=b.collectionAddress||b.address||'';$('bDelAd').value=b.deliveryAddress||'';$('bCp').value=b.contactNumber||'';
   $('bDs').value=b.desc||'';$('bDt').value=b.date||todayStr();$('bTm').value=b.time||'';$('bTmEnd').value=b.timeEnd||'';
   $('bTy').value=b.type||'Preventive Maintenance';$('bPr').value=b.priority||'Medium';
   $('bDel').style.display='';
@@ -504,6 +506,7 @@ function waBooking(){
   if(v('bTi'))L.push('• *Job:* '+v('bTi'));
   if(v('bCo'))L.push('• *Company:* '+v('bCo'));
   if(v('bCu'))L.push('• *Customer:* '+v('bCu'));
+  if(v('bCp'))L.push('• *Contact:* '+v('bCp'));
   if(v('bDt'))L.push('• *Date:* '+v('bDt')+(v('bTm')?' '+v('bTm')+(v('bTmEnd')?'–'+v('bTmEnd'):''):''));
   if(v('bTy'))L.push('• *Type:* '+v('bTy'));
   if(v('bPr'))L.push('• *Priority:* '+v('bPr'));
@@ -530,6 +533,7 @@ function saveBooking(){
     title, date, time:$('bTm').value, timeEnd:$('bTmEnd').value,
     company:$('bCo').value,
     customer:$('bCu').value.trim(),
+    contactNumber:$('bCp').value.trim(),
     techIds:curWorker!=null?[curWorker]:[],
     techNames:(t&&t.name)||WORKER_NAME,
     type:$('bTy').value, priority:$('bPr').value,
